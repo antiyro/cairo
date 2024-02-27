@@ -115,7 +115,7 @@ impl ConcreteTraitGenericFunctionLongId {
         assert_eq!(
             concrete_trait_id.trait_id(db),
             function_id.trait_id(db.upcast()),
-            "Concrete trait a trait function must belong to the same generic trait."
+            "Concrete trait and trait function must belong to the same generic trait."
         );
         Self { concrete_trait_id, function_id }
     }
@@ -151,6 +151,58 @@ impl ConcreteTraitGenericFunctionId {
 
     pub fn concrete_trait_id(&self, db: &dyn SemanticGroup) -> ConcreteTraitId {
         db.lookup_intern_concrete_trait_function(*self).concrete_trait_id
+    }
+}
+
+/// The ID of a type item in a concrete trait.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, DebugWithDb, SemanticObject)]
+#[debug_db(dyn SemanticGroup + 'static)]
+pub struct ConcreteTraitTypeLongId {
+    // Note the members are private to prevent direct call to the constructor.
+    concrete_trait_id: ConcreteTraitId,
+    type_id: TraitTypeId,
+}
+impl ConcreteTraitTypeLongId {
+    pub fn new(
+        db: &dyn SemanticGroup,
+        concrete_trait_id: ConcreteTraitId,
+        type_id: TraitTypeId,
+    ) -> Self {
+        assert_eq!(
+            concrete_trait_id.trait_id(db),
+            type_id.trait_id(db.upcast()),
+            "Concrete trait and trait type must belong to the same generic trait."
+        );
+        Self { concrete_trait_id, type_id }
+    }
+}
+define_short_id!(
+    ConcreteTraitTypeId,
+    ConcreteTraitTypeLongId,
+    SemanticGroup,
+    lookup_intern_concrete_trait_type
+);
+semantic_object_for_id!(
+    ConcreteTraitTypeId,
+    lookup_intern_concrete_trait_type,
+    intern_concrete_trait_type,
+    ConcreteTraitTypeLongId
+);
+impl ConcreteTraitTypeId {
+    pub fn new(
+        db: &dyn SemanticGroup,
+        concrete_trait_id: ConcreteTraitId,
+        type_id: TraitTypeId,
+    ) -> Self {
+        db.intern_concrete_trait_type(ConcreteTraitTypeLongId::new(db, concrete_trait_id, type_id))
+    }
+
+    pub fn type_id(&self, db: &dyn SemanticGroup) -> TraitTypeId {
+        db.lookup_intern_concrete_trait_type(*self).type_id
+    }
+
+    pub fn concrete_trait_id(&self, db: &dyn SemanticGroup) -> ConcreteTraitId {
+        db.lookup_intern_concrete_trait_type(*self).concrete_trait_id
     }
 }
 
@@ -312,6 +364,21 @@ pub fn trait_item_names(
     let trait_functions = db.trait_functions(trait_id)?;
     let trait_types = db.trait_types(trait_id)?;
     Ok(chain!(trait_functions.keys(), trait_types.keys()).cloned().collect())
+}
+
+/// Query implementation of [crate::db::SemanticGroup::trait_item_by_name].
+pub fn trait_item_by_name(
+    db: &dyn SemanticGroup,
+    trait_id: TraitId,
+    name: SmolStr,
+) -> Maybe<Option<TraitItemId>> {
+    if let Some(trait_function_id) = db.trait_function_by_name(trait_id, name.clone())? {
+        return Ok(Some(TraitItemId::Function(trait_function_id)));
+    };
+    if let Some(trait_type_id) = db.trait_type_by_name(trait_id, name)? {
+        return Ok(Some(TraitItemId::Type(trait_type_id)));
+    };
+    Ok(None)
 }
 
 /// Query implementation of [crate::db::SemanticGroup::trait_functions].

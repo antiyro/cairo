@@ -350,6 +350,7 @@ pub fn unwrap_error_propagation_type(
         | TypeLongId::Tuple(_)
         | TypeLongId::Snapshot(_)
         | TypeLongId::Var(_)
+        | TypeLongId::ImplType(_)
         | TypeLongId::Missing(_) => None,
     }
 }

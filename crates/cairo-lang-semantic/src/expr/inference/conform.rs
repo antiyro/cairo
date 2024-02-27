@@ -130,7 +130,10 @@ impl<'db> InferenceConform for Inference<'db> {
                 let (ty, n_snapshots) = self.conform_ty_ex(ty0, ty1, ty0_is_self)?;
                 Ok((self.db.intern_type(TypeLongId::Snapshot(ty)), n_snapshots))
             }
-            TypeLongId::GenericParameter(_) => Err(InferenceError::TypeKindMismatch { ty0, ty1 }),
+            // TODO(yg): maybe if can be resolved, (impl is concrete), resolve it here?
+            TypeLongId::GenericParameter(_) | TypeLongId::ImplType(_) => {
+                Err(InferenceError::TypeKindMismatch { ty0, ty1 })
+            }
             TypeLongId::Var(var) => Ok((self.assign_ty(var, ty1)?, n_snapshots)),
             TypeLongId::Missing(_) => Ok((ty0, n_snapshots)),
         }
@@ -277,6 +280,7 @@ impl<'db> InferenceConform for Inference<'db> {
                 false
             }
             TypeLongId::GenericParameter(_) | TypeLongId::Missing(_) => false,
+            TypeLongId::ImplType(_) => todo!(), // TODO(yg)
         }
     }
 

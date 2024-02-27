@@ -64,7 +64,9 @@ use crate::literals::try_extract_minus_literal;
 use crate::resolve::{ResolvedConcreteItem, ResolvedGenericItem, Resolver};
 use crate::semantic::{self, FunctionId, LocalVariable, TypeId, TypeLongId, Variable};
 use crate::substitution::SemanticRewriter;
-use crate::types::{peel_snapshots, resolve_type, wrap_in_snapshots, ConcreteTypeId};
+use crate::types::{
+    peel_snapshots, reduce_impl_type_if_possible, resolve_type, wrap_in_snapshots, ConcreteTypeId,
+};
 use crate::{
     ConcreteEnumId, GenericArgumentId, Member, Mutability, Parameter, PatternStringLiteral,
     PatternStruct, Signature,
@@ -201,9 +203,17 @@ impl<'ctx> ComputationContext<'ctx> {
             .report_by_ptr(stable_ptr, UnsupportedOutsideOfFunction { feature_name }))
     }
 
+    // TODO(yg): find a more distinguished name (different verb) for those two.
+    // TODO(yg): is this right? Check why self is mut?
+    /// Assigns the most known concrete type to the given type, according to previous knowledge.
     fn reduce_ty(&mut self, ty: TypeId) -> TypeId {
         // TODO(spapini): Propagate error to diagnostics.
         self.resolver.inference().rewrite(ty).unwrap()
+    }
+
+    // TODO(yg): doc.
+    fn reduce_impl_type_if_possible(&self, type_to_reduce: TypeId) -> Maybe<TypeId> {
+        reduce_impl_type_if_possible(self.db, type_to_reduce, self.impl_ctx)
     }
 }
 
@@ -699,8 +709,13 @@ fn compute_expr_function_call_semantic(
             if mutability != Mutability::Immutable {
                 return Err(ctx.diagnostics.report(&args_syntax, VariantCtorNotImmutable));
             }
+            // TODO(ygg1): do in all places where WrongArgumentType is returned. Maybe in all places
+            // where ctx.reduce_ty() is called? Anyway consider wrapping reduce_ty and
+            // reduce_impl_type_if_possible together.
             let expected_ty = ctx.reduce_ty(concrete_variant.ty);
+            let expected_ty = ctx.reduce_impl_type_if_possible(expected_ty)?;
             let actual_ty = ctx.reduce_ty(arg.ty());
+            let actual_ty = ctx.reduce_impl_type_if_possible(actual_ty)?;
             if ctx.resolver.inference().conform_ty(actual_ty, expected_ty).is_err() {
                 return Err(ctx
                     .diagnostics
@@ -768,8 +783,9 @@ pub fn compute_root_expr(
     return_type: TypeId,
 ) -> Maybe<ExprId> {
     let res = compute_expr_block_semantic(ctx, syntax)?;
-    let res_ty = res.ty();
+    let res_ty = ctx.reduce_impl_type_if_possible(res.ty())?;
     let res = ctx.exprs.alloc(res);
+    let return_type = ctx.reduce_impl_type_if_possible(return_type)?;
     if ctx.resolver.inference().conform_ty(res_ty, return_type).is_err() {
         ctx.diagnostics
             .report(syntax, WrongReturnType { expected_ty: return_type, actual_ty: res_ty });
@@ -2093,7 +2109,9 @@ fn member_access_expr(
     // Find MemberId.
     let member_name = expr_as_identifier(ctx, &rhs_syntax, syntax_db)?;
     let ty = ctx.reduce_ty(lexpr.ty());
+    let ty = ctx.reduce_impl_type_if_possible(ty)?;
     let (n_snapshots, long_ty) = peel_snapshots(ctx.db, ty);
+
     match long_ty {
         TypeLongId::Concrete(concrete) => match concrete {
             ConcreteTypeId::Struct(concrete_struct_id) => {
@@ -2148,7 +2166,7 @@ fn member_access_expr(
             // TODO(spapini): Handle snapshot members.
             Err(ctx.diagnostics.report(&rhs_syntax, Unsupported))
         }
-        TypeLongId::GenericParameter(_) => {
+        TypeLongId::GenericParameter(_) | TypeLongId::ImplType(_) => {
             Err(ctx.diagnostics.report(&rhs_syntax, TypeHasNoMembers { ty, member_name }))
         }
         TypeLongId::Var(_) => Err(ctx
@@ -2264,10 +2282,10 @@ fn expr_function_call(
     {
         validate_unstable_feature_usage(ctx, attr, stable_ptr);
     }
-    // TODO(spapini): Better location for these diagnostics after the refactor for generics resolve.
-    // TODO(lior): Check whether concrete_function_signature should be `Option` instead of `Maybe`.
-    let signature = ctx.db.concrete_function_signature(function_id)?;
 
+    let signature = get_function_reduced_signature(ctx, function_id)?;
+
+    // TODO(spapini): Better location for these diagnostics after the refactor for generics resolve.
     if named_args.len() != signature.params.len() {
         return Err(ctx.diagnostics.report_by_ptr(
             stable_ptr.untyped(),
@@ -2288,7 +2306,9 @@ fn expr_function_call(
         // added).
         // TODO(lior): Add a test to missing type once possible.
         let expected_ty = ctx.reduce_ty(param_typ);
+        let expected_ty = ctx.reduce_impl_type_if_possible(expected_ty)?;
         let actual_ty = ctx.reduce_ty(arg_typ);
+        let actual_ty = ctx.reduce_impl_type_if_possible(actual_ty)?;
         if !arg_typ.is_missing(ctx.db)
             && ctx.resolver.inference().conform_ty(actual_ty, expected_ty).is_err()
         {
@@ -2333,6 +2353,34 @@ fn expr_function_call(
         return Err(ctx.diagnostics.report_by_ptr(stable_ptr.untyped(), PanicableFromNonPanicable));
     }
     Ok(Expr::FunctionCall(expr_function_call))
+}
+
+fn get_function_reduced_signature(
+    ctx: &mut ComputationContext<'_>,
+    function_id: FunctionId,
+) -> Maybe<Signature> {
+    // TODO(lior): Check whether concrete_function_signature should be `Option` instead of `Maybe`.
+    let mut signature = ctx.db.concrete_function_signature(function_id)?;
+    let generic_function = function_id.lookup(ctx.db).function.generic_function;
+
+    // If the generic function isn't an impl function, return signature as is.
+    let crate::items::functions::GenericFunctionId::Impl(impl_generic_function) = generic_function
+    else {
+        return Ok(signature);
+    };
+    // If the impl of the impl generic function isn't concrete, return signature as is.
+    let Some(impl_function) = impl_generic_function.impl_function(ctx.db)? else {
+        return Ok(signature);
+    };
+    let impl_def_id = impl_function.impl_def_id(ctx.db.upcast());
+
+    for param in signature.params.iter_mut() {
+        // Reduce the type in the context of the concrete function impl, not `ctx.impl_ctx`.
+        param.ty = reduce_impl_type_if_possible(ctx.db, param.ty, Some(impl_def_id))?;
+    }
+    signature.return_type =
+        reduce_impl_type_if_possible(ctx.db, signature.return_type, Some(impl_def_id))?;
+    Ok(signature)
 }
 
 /// Checks if a panicable function is called from a disallowed context.
@@ -2421,7 +2469,9 @@ pub fn compute_statement_semantic(
                     let explicit_type =
                         resolve_type(db, ctx.diagnostics, &mut ctx.resolver, &var_type_path);
                     let explicit_type = ctx.reduce_ty(explicit_type);
+                    let explicit_type = ctx.reduce_impl_type_if_possible(explicit_type)?;
                     let inferred_type = ctx.reduce_ty(inferred_type);
+                    let inferred_type = ctx.reduce_impl_type_if_possible(inferred_type)?;
                     if !inferred_type.is_missing(db)
                         && ctx
                             .resolver

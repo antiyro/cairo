@@ -78,6 +78,7 @@ pub fn get_concrete_long_type_id(
             .collect::<Maybe<_>>()?,
         })
     };
+    // TODO(yg)
     Ok(match db.lookup_intern_type(type_id) {
         semantic::TypeLongId::Concrete(ty) => {
             match ty {
