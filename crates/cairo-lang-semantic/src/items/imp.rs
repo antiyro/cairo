@@ -1736,6 +1736,8 @@ pub fn priv_impl_function_body_data(
         Some(&declaration.function_declaration_data.signature),
         environment,
     );
+    ctx.impl_ctx = Some(impl_def_id);
+
     let function_body = function_syntax.body(db.upcast());
     let return_type = declaration.function_declaration_data.signature.return_type;
     let body_expr = compute_root_expr(&mut ctx, &function_body, return_type)?;

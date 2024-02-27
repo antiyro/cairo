@@ -8,8 +8,8 @@ use std::sync::Arc;
 use ast::PathSegment;
 use cairo_lang_defs::db::validate_attributes_flat;
 use cairo_lang_defs::ids::{
-    EnumId, FunctionTitleId, FunctionWithBodyId, GenericKind, LanguageElementId, LocalVarLongId,
-    LookupItemId, MemberId, ModuleId, TraitFunctionId, TraitId,
+    EnumId, FunctionTitleId, FunctionWithBodyId, GenericKind, ImplDefId, LanguageElementId,
+    LocalVarLongId, LookupItemId, MemberId, ModuleId, TraitFunctionId, TraitId,
 };
 use cairo_lang_diagnostics::{Maybe, ToOption};
 use cairo_lang_filesystem::ids::{FileKind, FileLongId, VirtualFile};
@@ -124,6 +124,9 @@ pub struct ComputationContext<'ctx> {
     /// Definitions of semantic variables.
     pub semantic_defs: UnorderedHashMap<semantic::VarId, semantic::Variable>,
     loop_ctx: Option<LoopContext>,
+    /// The containing impl context, if in an impl.
+    // TODO(yg): change to context containing ImplDefId?
+    pub impl_ctx: Option<ImplDefId>,
 }
 impl<'ctx> ComputationContext<'ctx> {
     pub fn new(
@@ -148,6 +151,7 @@ impl<'ctx> ComputationContext<'ctx> {
             statements: Arena::default(),
             semantic_defs,
             loop_ctx: None,
+            impl_ctx: None,
         }
     }
 
